@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 
-import select
+import sys
 import socket
 import struct
-import threading
+import select
 import time
+import threading
 
 import errors
-from enums import ICMP_DEFAULT_CODE, IcmpType, IcmpTimeExceededCode
+from enums import ICMP_DEFAULT_CODE, IcmpType, IcmpTimeExceededCode, IcmpDestinationUnreachableCode
 
 __version__ = "2.4.0"
 DEBUG = False  # DEBUG: Show debug info for developers. (default False)
