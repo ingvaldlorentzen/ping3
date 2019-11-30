@@ -106,7 +106,7 @@ def send_one_ping(sock: socket, dest_addr: str, icmp_id: int, seq: int, size: in
     real_checksum = checksum(icmp_header + icmp_payload)  # Calculates the checksum on the dummy header and the icmp_payload.
     # Don't know why I need socket.htons() on real_checksum since ICMP_HEADER_FORMAT already in Network Bytes Order (big-endian)
     if ipv6:
-        icmp_header = struct.pack(ICMPV6_HEADER_FORMAT, IcmpType.ECHO_REQUEST_IPV6, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)
+        icmp_header = struct.pack(ICMPV6_HEADER_FORMAT, Icmpv6Type.ECHO_REQUEST, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)
     else:
         icmp_header = struct.pack(ICMP_HEADER_FORMAT, IcmpType.ECHO_REQUEST, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)  # Put real checksum into ICMP header.
     packet = icmp_header + icmp_payload
