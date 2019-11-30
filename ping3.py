@@ -8,7 +8,7 @@ import time
 import threading
 
 import errors
-from enums import ICMP_DEFAULT_CODE, IcmpType, IcmpTimeExceededCode, IcmpDestinationUnreachableCode
+from enums import ICMP_DEFAULT_CODE, IcmpType, IcmpTimeExceededCode, IcmpDestinationUnreachableCode, Icmpv6Type
 
 __version__ = "2.4.0"
 DEBUG = False  # DEBUG: Show debug info for developers. (default False)
@@ -16,7 +16,7 @@ EXCEPTIONS = False  # EXCEPTIONS: Raise exception when delay is not available.
 
 IP_HEADER_FORMAT = "!BBHHHBBHII"
 ICMP_HEADER_FORMAT = "!BBHHH"  # According to netinet/ip_icmp.h. !=network byte order(big-endian), B=unsigned char, H=unsigned short
-ICMP_HEADER_FORMAT_IPV6 = "!BbHHh"
+ICMPV6_HEADER_FORMAT = "!BbHHh"
 ICMP_TIME_FORMAT = "!d"  # d=double
 
 
@@ -80,7 +80,7 @@ def checksum(source: bytes) -> int:
     return ~sum & 0xffff
 
 
-def send_one_ping(sock: socket, dest_addr: str, icmp_id: int, seq: int, size: int, ip_type: str):
+def send_one_ping(sock: socket, dest_addr: str, icmp_id: int, seq: int, size: int, ipv6: bool = False):
     """Sends one ping to the given destination.
 
     ICMP Header (bits): type (8), code (8), checksum (16), id (16), sequence (16)
@@ -93,21 +93,22 @@ def send_one_ping(sock: socket, dest_addr: str, icmp_id: int, seq: int, size: in
         icmp_id: ICMP packet id, usually is same as pid.
         seq: ICMP packet sequence, usually increases from 0 in the same process.
         size: The ICMP packet payload size in bytes. Note this is only for the payload part.
+        ipv6: True if pinging IPv6 address.
     """
     pseudo_checksum = 0  # Pseudo checksum is used to calculate the real checksum.
-    if ip_type == '4':
+    if ipv6:
+        icmp_header = struct.pack(ICMPV6_HEADER_FORMAT, Icmpv6Type.ECHO_REQUEST, ICMP_DEFAULT_CODE, pseudo_checksum, icmp_id, seq)
+        padding = (size - struct.calcsize(ICMP_TIME_FORMAT) - struct.calcsize(ICMPV6_HEADER_FORMAT)) * "Q"  # Using double to store current time.
+    else:
         icmp_header = struct.pack(ICMP_HEADER_FORMAT, IcmpType.ECHO_REQUEST, ICMP_DEFAULT_CODE, pseudo_checksum, icmp_id, seq)
         padding = (size - struct.calcsize(ICMP_TIME_FORMAT) - struct.calcsize(ICMP_HEADER_FORMAT)) * "Q"  # Using double to store current time.
-    else:
-        icmp_header = struct.pack(ICMP_HEADER_FORMAT_IPV6, IcmpType.ECHO_REQUEST_IPV6, ICMP_DEFAULT_CODE, pseudo_checksum, icmp_id, seq)
-        padding = (size - struct.calcsize(ICMP_TIME_FORMAT) - struct.calcsize(ICMP_HEADER_FORMAT_IPV6)) * "Q"  # Using double to store current time.
     icmp_payload = struct.pack(ICMP_TIME_FORMAT, time.time()) + padding.encode()
     real_checksum = checksum(icmp_header + icmp_payload)  # Calculates the checksum on the dummy header and the icmp_payload.
     # Don't know why I need socket.htons() on real_checksum since ICMP_HEADER_FORMAT already in Network Bytes Order (big-endian)
-    if ip_type == '4':
-        icmp_header = struct.pack(ICMP_HEADER_FORMAT, IcmpType.ECHO_REQUEST, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)  # Put real checksum into ICMP header.
+    if ipv6:
+        icmp_header = struct.pack(ICMPV6_HEADER_FORMAT, IcmpType.ECHO_REQUEST_IPV6, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)
     else:
-        icmp_header = struct.pack(ICMP_HEADER_FORMAT_IPV6, IcmpType.ECHO_REQUEST_IPV6, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)
+        icmp_header = struct.pack(ICMP_HEADER_FORMAT, IcmpType.ECHO_REQUEST, ICMP_DEFAULT_CODE, socket.htons(real_checksum), icmp_id, seq)  # Put real checksum into ICMP header.
     packet = icmp_header + icmp_payload
     sock.sendto(packet, (dest_addr, 0))  # addr = (ip, port). Port is 0 respectively the OS default behavior will be used.
 
@@ -127,17 +128,17 @@ def resolve_ip(dest_addr: str):
     try:
         ipv4_addresses = socket.getaddrinfo(dest_addr, None, family=socket.AF_INET)
         dest_addr = list(set(item[4][0] for item in ipv4_addresses))[0]
-        return dest_addr, '4'
+        return dest_addr, False
     except socket.gaierror:
         try:
             ipv6_addresses = socket.getaddrinfo(dest_addr, None, family=socket.AF_INET6)
             dest_addr = list(set(item[4][0] for item in ipv6_addresses))[0]
-            return dest_addr, '6'
+            return dest_addr, True
         except socket.gaierror as e:
             raise errors.HostUnknown(dest_addr) from e
 
 
-def receive_one_ping(sock: socket, icmp_id: int, seq: int, timeout: int, ip_type: str) -> float or None:
+def receive_one_ping(sock: socket, icmp_id: int, seq: int, timeout: int, ipv6: bool = False) -> float or None:
     """Receives the ping from the socket.
 
     IP Header (bits): version (8), type of service (8), length (16), id (16), flags (16), time to live (8), protocol (8), checksum (16), source ip (32), destination ip (32).
@@ -150,7 +151,7 @@ def receive_one_ping(sock: socket, icmp_id: int, seq: int, timeout: int, ip_type
         icmp_id: ICMP packet id. Sent packet id should be identical with received packet id.
         seq: ICMP packet sequence. Sent packet sequence should be identical with received packet sequence.
         timeout: Timeout in seconds.
-
+        ipv6: True if pinging IPv6 address.
     Returns:
         The delay in seconds or None on timeout.
 
@@ -159,10 +160,10 @@ def receive_one_ping(sock: socket, icmp_id: int, seq: int, timeout: int, ip_type
         TimeExceeded: If time exceeded but Time-To-Live does not expired.
     """
     ip_header_slice = slice(0, struct.calcsize(IP_HEADER_FORMAT))  # [0:20]
-    if ip_type == '4':
-        icmp_header_slice = slice(ip_header_slice.stop, ip_header_slice.stop + struct.calcsize(ICMP_HEADER_FORMAT))  # [20:28]
+    if ipv6:
+        icmp_header_slice = slice(ip_header_slice.stop, ip_header_slice.stop + struct.calcsize(ICMPV6_HEADER_FORMAT))  #
     else:
-        icmp_header_slice = slice(ip_header_slice.stop, ip_header_slice.stop + struct.calcsize(ICMP_HEADER_FORMAT_IPV6))  #
+        icmp_header_slice = slice(ip_header_slice.stop, ip_header_slice.stop + struct.calcsize(ICMP_HEADER_FORMAT))  # [20:28]
     ip_header_keys = ('version', 'tos', 'len', 'id', 'flags', 'ttl', 'protocol', 'checksum', 'src_addr', 'dest_addr')
     icmp_header_keys = ('type', 'code', 'checksum', 'id', 'seq')
     while True:
@@ -174,20 +175,20 @@ def receive_one_ping(sock: socket, icmp_id: int, seq: int, timeout: int, ip_type
         ip_header_raw, icmp_header_raw, icmp_payload_raw = recv_data[ip_header_slice], recv_data[icmp_header_slice], recv_data[icmp_header_slice.stop:]
         ip_header = dict(zip(ip_header_keys, struct.unpack(IP_HEADER_FORMAT, ip_header_raw)))
         _debug("IP HEADER:", ip_header)
-        if ip_type == '4':
-            icmp_header = dict(zip(icmp_header_keys, struct.unpack(ICMP_HEADER_FORMAT, icmp_header_raw)))
+        if ipv6:
+            icmp_header = dict(zip(icmp_header_keys, struct.unpack(ICMPV6_HEADER_FORMAT, icmp_header_raw)))
         else:
-            icmp_header = dict(zip(icmp_header_keys, struct.unpack(ICMP_HEADER_FORMAT_IPV6, icmp_header_raw)))
+            icmp_header = dict(zip(icmp_header_keys, struct.unpack(ICMP_HEADER_FORMAT, icmp_header_raw)))
         _debug("ICMP HEADER:", icmp_header)
-        if icmp_header['type'] == IcmpType.TIME_EXCEEDED:  # TIME_EXCEEDED has no icmp_id and icmp_seq. Usually they are 0.
+        if icmp_header['type'] == IcmpType.TIME_EXCEEDED or icmp_header['type'] == Icmpv6Type.TIME_EXCEEDED:  # TIME_EXCEEDED has no icmp_id and icmp_seq. Usually they are 0.
             if icmp_header['code'] == IcmpTimeExceededCode.TTL_EXPIRED:
                 raise errors.TimeToLiveExpired()  # Some router does not report TTL expired and then timeout shows.
             raise errors.TimeExceeded()
         if icmp_header['id'] == icmp_id and icmp_header['seq'] == seq:  # ECHO_REPLY should match the
-            if icmp_header['type'] == IcmpType.ECHO_REQUEST or icmp_header['type'] == IcmpType.ECHO_REQUEST_IPV6:  # filters out the ECHO_REQUEST itself.
+            if icmp_header['type'] == IcmpType.ECHO_REQUEST or icmp_header['type'] == Icmpv6Type.ECHO_REQUEST:  # filters out the ECHO_REQUEST itself.
                 _debug("ECHO_REQUEST filtered out.")
                 continue
-            if icmp_header['type'] == IcmpType.ECHO_REPLY or icmp_header['type'] == IcmpType.ECHO_REPLY_IPV6:
+            if icmp_header['type'] == IcmpType.ECHO_REPLY or icmp_header['type'] == Icmpv6Type.ECHO_REPLY:
                 time_sent = struct.unpack(ICMP_TIME_FORMAT, icmp_payload_raw[0:struct.calcsize(ICMP_TIME_FORMAT)])[0]
                 return time_recv - time_sent
 
@@ -212,22 +213,22 @@ def ping(dest_addr: str, timeout: int = 4, unit: str = "s", src_addr: str = None
         PingError: Any PingError will raise again if `ping3.EXCEPTIONS` is True.
     """
     try:
-        dest_addr, ip_type = resolve_ip(dest_addr)
+        dest_addr, ipv6 = resolve_ip(dest_addr)
     except errors.HostUnknown as e:  # Unsolved
         _debug(e)
         _raise(e)
         return False
 
-    with socket.socket(socket.AF_INET if ip_type == '4' else socket.AF_INET6,
+    with socket.socket(socket.AF_INET6 if ipv6 else socket.AF_INET,
                        socket.SOCK_RAW,
-                       socket.IPPROTO_ICMP) as sock:
+                       socket.IPPROTO_ICMPV6 if ipv6 else socket.IPPROTO_ICMP) as sock:
         # sock.setsockopt(socket.SOL_IP, socket.IP_TTL, ttl)
         if src_addr:
             sock.bind((src_addr, 0))  # only packets send to src_addr are received.
         icmp_id = threading.current_thread().ident % 0xFFFF
         try:
-            send_one_ping(sock=sock, dest_addr=dest_addr, icmp_id=icmp_id, seq=seq, size=size, ip_type=ip_type)
-            delay = receive_one_ping(sock=sock, icmp_id=icmp_id, seq=seq, timeout=timeout, ip_type=ip_type)  # in seconds
+            send_one_ping(sock=sock, dest_addr=dest_addr, icmp_id=icmp_id, seq=seq, size=size, ipv6=ipv6)
+            delay = receive_one_ping(sock=sock, icmp_id=icmp_id, seq=seq, timeout=timeout, ipv6=ipv6)  # in seconds
         except errors.PingError as e:
             _debug(e)
             _raise(e)
