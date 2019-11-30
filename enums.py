@@ -20,15 +20,16 @@ class IcmpType(enum.IntEnum):
 class Icmpv6Type(enum.IntEnum):
     """Enum for IPv6 Type in ICMP Header."""
     ECHO_REPLY = 129
-    DESTINATION_UNREACHABLE = 3
-    REDIRECT_MESSAGE = 5
+    DESTINATION_UNREACHABLE = 1
+    REDIRECT_MESSAGE = 137
     ECHO_REQUEST = 128
-    ROUTER_ADVERTISEMENT = 9
-    ROUTER_SOLICITATION = 10
-    TIME_EXCEEDED = 11
-    BAD_IP_HEADER = 12
-    TIMESTAMP = 13
-    TIMESTAMP_REPLY = 14
+    ROUTER_ADVERTISEMENT = 134
+    ROUTER_SOLICITATION = 133
+    TIME_EXCEEDED = 3
+    BAD_IP_HEADER = 4
+
+    # TIMESTAMP = 13
+    # TIMESTAMP_REPLY = 14
 
 
 class IcmpDestinationUnreachableCode(enum.IntEnum):
